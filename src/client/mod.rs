@@ -54,6 +54,7 @@ static RECEIVED_KITTY_GRAPHICS_IDS: OnceLock<Mutex<HashSet<u32>>> = OnceLock::ne
 struct ClientLoopConfig {
     sound_config: crate::config::SoundConfig,
     mouse_scroll_lines: usize,
+    page_scroll_lines: usize,
     redraw_on_focus_gained: bool,
     host_cursor: crate::config::HostCursorModeConfig,
     kitty_graphics_enabled: bool,
@@ -80,6 +81,9 @@ struct ClientState {
     /// Rows scrolled for one direct-attach wheel notch.
     #[cfg(unix)]
     mouse_scroll_lines: usize,
+    /// Lines to scroll per Page Up/Down press.
+    #[cfg(unix)]
+    page_scroll_lines: usize,
     /// Local-client shortcut that sends a clipboard image to a remote Herdr session.
     remote_image_paste_key: Option<(crossterm::event::KeyCode, crossterm::event::KeyModifiers)>,
     /// Whether outer focus gain should force a full host-terminal redraw.
@@ -123,6 +127,7 @@ impl AttachEscapeState {
         data: Vec<u8>,
         viewport_rows: u16,
         mouse_scroll_lines: usize,
+        page_scroll_lines: usize,
     ) -> AttachInputAction {
         const PREFIX: u8 = 0x02; // Ctrl+B
 
@@ -151,7 +156,7 @@ impl AttachEscapeState {
         if output.is_empty() {
             AttachInputAction::None
         } else if let Some(action) =
-            attach_scroll_action(&output, viewport_rows, mouse_scroll_lines)
+            attach_scroll_action(&output, viewport_rows, mouse_scroll_lines, page_scroll_lines)
         {
             action
         } else {
@@ -165,6 +170,7 @@ fn attach_scroll_action(
     data: &[u8],
     viewport_rows: u16,
     mouse_scroll_lines: usize,
+    page_scroll_lines: usize,
 ) -> Option<AttachInputAction> {
     let mut events = crate::raw_input::parse_raw_input_bytes_sync(data);
     if events.len() != 1 {
@@ -201,7 +207,11 @@ fn attach_scroll_action(
                     input: data.to_vec(),
                 },
                 direction,
-                lines: viewport_rows.saturating_sub(1).max(1),
+                lines: if page_scroll_lines == 0 {
+                    viewport_rows.saturating_sub(1).max(1) // Full screen (default)
+                } else {
+                    (page_scroll_lines as u16).min(viewport_rows).max(1)
+                },
                 column: None,
                 row: None,
                 modifiers: KeyModifiers::empty().bits(),
@@ -1117,6 +1127,7 @@ fn run_client_with_mode(
     crate::terminal_modes::clear_host_mouse_reporting(&mut io::stdout())?;
     let mouse_capture = loaded_config.config.ui.mouse_capture;
     let mouse_scroll_lines = loaded_config.config.ui.mouse_scroll_lines();
+    let page_scroll_lines = loaded_config.config.ui.page_scroll_lines();
     let redraw_on_focus_gained = loaded_config.config.ui.redraw_on_focus_gained;
     let host_cursor = loaded_config.config.ui.host_cursor;
     let direct_attach_requested = attach_request.is_some();
@@ -1126,6 +1137,7 @@ fn run_client_with_mode(
     let loop_config = ClientLoopConfig {
         sound_config: loaded_config.config.ui.sound,
         mouse_scroll_lines,
+        page_scroll_lines,
         redraw_on_focus_gained,
         host_cursor,
         kitty_graphics_enabled,
@@ -1299,6 +1311,8 @@ async fn run_client_loop(
         attach_escape,
         #[cfg(unix)]
         mouse_scroll_lines: config.mouse_scroll_lines,
+        #[cfg(unix)]
+        page_scroll_lines: config.page_scroll_lines,
         remote_image_paste_key: config.remote_image_paste_key,
         redraw_on_focus_gained: config.redraw_on_focus_gained,
         repaint_pending: false,
@@ -1405,6 +1419,7 @@ async fn run_client_loop(
                         data,
                         state.reported_size.1,
                         state.mouse_scroll_lines,
+                        state.page_scroll_lines,
                     ) {
                         AttachInputAction::Forward(data) => data,
                         AttachInputAction::Scroll {
@@ -2776,11 +2791,11 @@ mod tests {
     fn attach_escape_detaches_on_prefix_q() {
         let mut escape = AttachEscapeState::default();
         assert!(matches!(
-            escape.filter_input(vec![0x02], 24, 3),
+            escape.filter_input(vec![0x02], 24, 3, 0),
             AttachInputAction::None
         ));
         assert!(matches!(
-            escape.filter_input(vec![b'q'], 24, 3),
+            escape.filter_input(vec![b'q'], 24, 3, 0),
             AttachInputAction::Detach
         ));
     }
@@ -2790,10 +2805,10 @@ mod tests {
     fn attach_escape_sends_literal_prefix_on_double_prefix() {
         let mut escape = AttachEscapeState::default();
         assert!(matches!(
-            escape.filter_input(vec![0x02], 24, 3),
+            escape.filter_input(vec![0x02], 24, 3, 0),
             AttachInputAction::None
         ));
-        match escape.filter_input(vec![0x02], 24, 3) {
+        match escape.filter_input(vec![0x02], 24, 3, 0) {
             AttachInputAction::Forward(bytes) => assert_eq!(bytes, vec![0x02]),
             other => panic!("expected forwarded prefix, got {other:?}"),
         }
@@ -2804,10 +2819,10 @@ mod tests {
     fn attach_escape_forwards_prefix_before_non_escape_key() {
         let mut escape = AttachEscapeState::default();
         assert!(matches!(
-            escape.filter_input(vec![b'a', 0x02], 24, 3),
+            escape.filter_input(vec![b'a', 0x02], 24, 3, 0),
             AttachInputAction::Forward(bytes) if bytes == b"a"
         ));
-        match escape.filter_input(vec![b'x'], 24, 3) {
+        match escape.filter_input(vec![b'x'], 24, 3, 0) {
             AttachInputAction::Forward(bytes) => assert_eq!(bytes, vec![0x02, b'x']),
             other => panic!("expected forwarded bytes, got {other:?}"),
         }
@@ -2817,7 +2832,7 @@ mod tests {
     #[test]
     fn attach_escape_turns_wheel_into_scroll_action() {
         let mut escape = AttachEscapeState::default();
-        match escape.filter_input(b"\x1b[<64;11;6M".to_vec(), 24, 7) {
+        match escape.filter_input(b"\x1b[<64;11;6M".to_vec(), 24, 7, 0) {
             AttachInputAction::Scroll {
                 source,
                 direction,
@@ -2841,7 +2856,7 @@ mod tests {
     fn attach_escape_swallows_non_wheel_mouse_reports() {
         let mut escape = AttachEscapeState::default();
         assert!(matches!(
-            escape.filter_input(b"\x1b[<0;11;6M".to_vec(), 24, 7),
+            escape.filter_input(b"\x1b[<0;11;6M".to_vec(), 24, 7, 0),
             AttachInputAction::None
         ));
     }
@@ -2850,7 +2865,7 @@ mod tests {
     #[test]
     fn attach_escape_turns_plain_page_keys_into_scroll_actions() {
         let mut escape = AttachEscapeState::default();
-        match escape.filter_input(b"\x1b[5~".to_vec(), 12, 3) {
+        match escape.filter_input(b"\x1b[5~".to_vec(), 12, 3, 0) {
             AttachInputAction::Scroll {
                 source,
                 direction,
@@ -2869,7 +2884,7 @@ mod tests {
             other => panic!("expected page-up scroll action, got {other:?}"),
         }
 
-        match escape.filter_input(b"\x1b[6~".to_vec(), 12, 3) {
+        match escape.filter_input(b"\x1b[6~".to_vec(), 12, 3, 0) {
             AttachInputAction::Scroll {
                 source,
                 direction,
@@ -2893,7 +2908,7 @@ mod tests {
     #[test]
     fn attach_escape_forwards_modified_page_key() {
         let mut escape = AttachEscapeState::default();
-        match escape.filter_input(b"\x1b[5;5~".to_vec(), 12, 3) {
+        match escape.filter_input(b"\x1b[5;5~".to_vec(), 12, 3, 0) {
             AttachInputAction::Forward(bytes) => assert_eq!(bytes, b"\x1b[5;5~"),
             other => panic!("expected modified page key to forward, got {other:?}"),
         }

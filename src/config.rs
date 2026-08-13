@@ -39,6 +39,7 @@ pub(crate) use self::keybinds::parse_key_combo;
 pub const CONFIG_PATH_ENV_VAR: &str = "HERDR_CONFIG_PATH";
 pub const DEFAULT_SCROLLBACK_LIMIT_BYTES: usize = 10_000_000;
 pub const DEFAULT_MOUSE_SCROLL_LINES: usize = 3;
+pub const DEFAULT_PAGE_SCROLL_LINES: usize = 0; // 0 = full screen
 pub const DEFAULT_MOBILE_WIDTH_THRESHOLD: u16 = 64;
 
 #[cfg(test)]
