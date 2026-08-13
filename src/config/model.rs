@@ -6,7 +6,7 @@ use serde::{de, Deserialize, Deserializer, Serialize};
 use super::{
     ActionKeybinds, BindingConfig, CommandKeybindConfig, IndexedKeybind, Keybinds, SidebarConfig,
     SoundConfig, ThemeConfig, DEFAULT_MOBILE_WIDTH_THRESHOLD, DEFAULT_MOUSE_SCROLL_LINES,
-    DEFAULT_SCROLLBACK_LIMIT_BYTES,
+    DEFAULT_PAGE_SCROLL_LINES, DEFAULT_SCROLLBACK_LIMIT_BYTES,
 };
 
 pub const MAX_TOAST_DELAY_SECONDS: u64 = 3600;
@@ -830,6 +830,9 @@ pub struct UiConfig {
     pub redraw_on_focus_gained: bool,
     /// Lines to scroll per mouse wheel notch. Default: 3.
     pub mouse_scroll_lines: Option<NonZeroUsize>,
+    /// Lines to scroll per Page Up/Down press. Default: 0 (full screen).
+    /// Set to a positive number to scroll that many lines instead.
+    pub page_scroll_lines: Option<usize>,
     /// Ask for confirmation before closing a workspace. Default: true.
     pub confirm_close: bool,
     /// Ask for a tab name before creating a new tab. Default: true.
@@ -1048,6 +1051,7 @@ impl Default for UiConfig {
             right_click_passthrough_modifier: RightClickPassthroughModifierConfig::default(),
             redraw_on_focus_gained: true,
             mouse_scroll_lines: None,
+            page_scroll_lines: None,
             confirm_close: true,
             prompt_new_tab_name: true,
             prompt_new_workspace_name: false,
@@ -1073,6 +1077,10 @@ impl UiConfig {
         self.mouse_scroll_lines
             .map(NonZeroUsize::get)
             .unwrap_or(DEFAULT_MOUSE_SCROLL_LINES)
+    }
+
+    pub fn page_scroll_lines(&self) -> usize {
+        self.page_scroll_lines.unwrap_or(DEFAULT_PAGE_SCROLL_LINES)
     }
 
     pub fn right_click_passthrough_modifiers(&self) -> Option<KeyModifiers> {
@@ -1632,6 +1640,29 @@ mouse_scroll_lines = 1
 mouse_scroll_lines = 0
 "#;
         assert!(toml::from_str::<Config>(toml).is_err());
+    }
+
+    #[test]
+    fn page_scroll_lines_defaults_to_zero_and_parses() {
+        let default_config = Config::default();
+        assert_eq!(default_config.ui.page_scroll_lines(), 0);
+
+        let toml = r#"
+[ui]
+page_scroll_lines = 20
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.ui.page_scroll_lines(), 20);
+    }
+
+    #[test]
+    fn page_scroll_lines_zero_means_full_screen() {
+        let toml = r#"
+[ui]
+page_scroll_lines = 0
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.ui.page_scroll_lines(), 0);
     }
 
     #[test]
