@@ -210,7 +210,8 @@ fn attach_scroll_action(
                 lines: if page_scroll_lines == 0 {
                     viewport_rows.saturating_sub(1).max(1) // Full screen (default)
                 } else {
-                    (page_scroll_lines as u16).min(viewport_rows).max(1)
+                    let clamped = page_scroll_lines.min(viewport_rows as usize).min(u16::MAX as usize);
+                    (clamped as u16).max(1)
                 },
                 column: None,
                 row: None,
